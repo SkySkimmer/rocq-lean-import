@@ -1490,11 +1490,8 @@ and declare_ind n { params; ty; ctors; univs } i =
             List.map
               (fun _ ->
                 {
-                  Record.Internal.pf_coercion = false;
-                  pf_reversible = false;
-                  pf_instance = false;
-                  pf_priority = None;
-                  pf_locality = Goptions.OptDefault;
+                  Record.Data.pf_coercion = None;
+                  pf_instance = None;
                   pf_canonical = false;
                 })
               fields
