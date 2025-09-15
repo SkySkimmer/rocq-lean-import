@@ -1142,9 +1142,9 @@ let rec to_constr =
             let ((ind, _) as indu) =
               Constr.destInd (EConstr.Unsafe.to_constr tc)
             in
-            let mib = Global.lookup_mind (fst ind) in
+            let mib, mip = Inductive.lookup_mind_specif (Global.env()) ind in
             begin
-              match mib.mind_record with
+              match mip.mind_record with
               | PrimRecord infos ->
                 let p, r =
                   Declareops.inductive_make_projection ind mib ~proj_arg:field
@@ -1153,7 +1153,7 @@ let rec to_constr =
                 mkProj (Projection.make p false, r, c)
               | NotRecord | FakeRecord ->
                 if
-                  mib.mind_packets.(snd ind).mind_relevance
+                  mip.mind_relevance
                   == EConstr.Unsafe.to_relevance EConstr.ERelevance.irrelevant
                 then
                   CErrors.user_err
