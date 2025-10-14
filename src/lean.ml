@@ -2107,8 +2107,8 @@ let do_line state l =
   | None -> do_line state l
   | Some t ->
     (match Control.timeout (float_of_int t) (fun () -> do_line state l) () with
-    | Some v -> v
-    | None -> raise TimedOut)
+    | Ok v -> v
+    | Error info -> Exninfo.iraise (TimedOut, info))
 
 let do_line state l =
   let t0 = System.get_time () in
