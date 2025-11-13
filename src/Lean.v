@@ -192,6 +192,8 @@ Section nat_notation.
         { assumption. } } }
   Qed.
 
+  Register Scheme Nat_le_ind as ind_dep for Nat_le.
+
   Definition Nat_le_rect (n : Nat) (P : forall m, n <= m -> Type)
               (H0 : P n (Nat_le_refl n))
               (HS : forall m (H : n <= m), P m H -> P (Nat_succ m) (Nat_le_step n m H))
@@ -217,6 +219,8 @@ Section nat_notation.
         { congruence. }
         { assumption. } } }
   Defined.
+
+  Register Scheme Nat_le_rect as rect_dep for Nat_le.
 
   Lemma Nat_le_nat_le' (n m : Nat) : (n <= m)%Nat -> (nat_of_Nat n <= nat_of_Nat m)%nat.
   Proof. induction 1; cbn; constructor; assumption. Defined.

@@ -791,7 +791,7 @@ let name_for_core n i =
    should be rare *)
 let name_for n i =
   let base = name_for_core n i in
-  if not (Global.exists_objlabel (Label.of_id base)) then base
+  if not (Global.exists_objlabel base) then base
   else
     (* prevent resetting the number *)
     let base = if i = 0 then base else Id.of_string (Id.to_string base ^ "_") in
