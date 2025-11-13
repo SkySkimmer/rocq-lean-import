@@ -22,14 +22,26 @@ type expr =
   | Nat of Z.t
   | String of string
 
-type def = { ty : expr; body : expr; univs : LeanName.t list; }
-type ax = { ty : expr; univs : LeanName.t list }
+type def = { name : LeanName.t; ty : expr; body : expr; univs : LeanName.t list; }
+type ax = { name : LeanName.t; ty : expr; univs : LeanName.t list }
 
 type ind = {
+  name : LeanName.t;
   params : (binder_kind * LeanName.t * expr) list;
   ty : expr;
   ctors : (LeanName.t * expr) list;
   univs : LeanName.t list;
 }
 
-type entry = Def of def | Ax of ax | Ind of ind | Quot
+type notation_kind = Prefix | Infix | Postfix
+
+type notation = {
+  kind : notation_kind;
+  head : LeanName.t;
+  level : int;
+  token : string;
+}
+
+type entry = Def of def | Ax of ax | Ind of ind | Quot of LeanName.t
+
+type action = Entry of entry | Nota of notation

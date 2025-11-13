@@ -32,17 +32,6 @@ let do_bk = function
     CErrors.user_err
       Pp.(str "unknown binder kind " ++ str bk ++ str "." ++ fnl ())
 
-type notation_kind = Prefix | Infix | Postfix
-
-type notation = {
-  kind : notation_kind;
-  head : N.t;
-  level : int;
-  token : string;
-}
-[@@warning "-69"]
-(* not yet used *)
-
 let do_notation_kind = function
   | "#PREFIX" -> Prefix
   | "#INFIX" -> Infix
@@ -53,7 +42,6 @@ type parsing_state = {
   names : N.t RRange.t;
   exprs : expr RRange.t;
   univs : U.t RRange.t;
-  notations : notation list;
 }
 
 let empty_state =
@@ -61,7 +49,6 @@ let empty_state =
     names = RRange.singleton N.anon;
     exprs = RRange.empty;
     univs = RRange.singleton U.Prop;
-    notations = [];
   }
 
 let get_name state n =
@@ -129,7 +116,6 @@ let parse_char s =
   assert (String.length s = 2);
   Char.chr ((parse_hexa s.[0] * 16) + parse_hexa s.[1])
 
-(* XXX share with other files *)
 let quot_name = N.append N.anon "quot"
 
 let do_line ~lcnt state l =
@@ -147,15 +133,15 @@ let do_line ~lcnt state l =
     let ty = get_expr state ty
     and body = get_expr state body
     and univs = List.map (get_name state) univs in
-    let def = { ty; body; univs; } in
-    (state, Some (name, Def def))
+    let def = { name; ty; body; univs; } in
+    (state, Some (Entry (Def def)))
   | "#AX" :: name :: ty :: univs ->
     let name = get_name state name in
     line_msg name;
     let ty = get_expr state ty
     and univs = List.map (get_name state) univs in
-    let ax = { ty; univs } in
-    (state, Some (name, Ax ax))
+    let ax = { name; ty; univs } in
+    (state, Some (Entry (Ax ax)))
   | "#IND" :: nparams :: name :: ty :: nctors :: rest ->
     let name = get_name state name in
     line_msg name;
@@ -168,22 +154,18 @@ let do_line ~lcnt state l =
       List.map (fun (nctor, ty) -> (nctor, fix_ctor name nparams ty)) ctors
     in
     let univs = List.map (get_name state) univs in
-    let ind = { params; ty; ctors; univs } in
-    (state, Some (name, Ind ind))
+    let ind = { name; params; ty; ctors; univs } in
+    (state, Some (Entry (Ind ind)))
   | [ "#QUOT" ] ->
     line_msg quot_name;
-    (state, Some (quot_name, Quot))
+    (state, Some (Entry (Quot quot_name)))
   | (("#PREFIX" | "#INFIX" | "#POSTFIX") as kind) :: rest ->
     (match rest with
     | [ n; level; token ] ->
       let kind = do_notation_kind kind
       and n = get_name state n
       and level = int_of_string level in
-      ( {
-          state with
-          notations = { kind; head = n; level; token } :: state.notations;
-        },
-        None )
+      (state, Some (Nota { kind; head = n; level; token }))
     | _ ->
       CErrors.user_err
         Pp.(

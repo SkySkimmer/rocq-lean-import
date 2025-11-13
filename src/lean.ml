@@ -1134,13 +1134,13 @@ and ensure_exists n i =
     (* if i = 0 then CErrors.user_err Pp.(N.pp n ++ str " was not instantiated!"); *)
     (* assert (not (upfront_instances ())); *)
     (match N.Map.find n !entries with
-    | Def def -> declare_def n def i
-    | Ax ax -> declare_ax n ax i
-    | Ind ind -> declare_ind n ind i
-    | Quot -> CErrors.user_err Pp.(str "quot must be predeclared")
+    | Def def -> declare_def def i
+    | Ax ax -> declare_ax ax i
+    | Ind ind -> declare_ind ind i
+    | Quot _ -> CErrors.user_err Pp.(str "quot must be predeclared")
     | exception Not_found -> CErrors.user_err Pp.(str "missing " ++ N.pp n))
 
-and declare_def n { ty; body; univs; } i =
+and declare_def { name = n; ty; body; univs; } i =
   let ref, algs =
     match get_predeclared_def_some n i with
     | Some ((UInt32_size | Nat_isValidChar), _, (def_name, c)) ->
@@ -1180,7 +1180,7 @@ and declare_def n { ty; body; univs; } i =
   let () = add_declared n i inst in
   inst
 
-and declare_ax n { ty; univs } i =
+and declare_ax { name = n; ty; univs } i =
   let uconv = start_uconv univs i in
   let uconv, ty = to_constr empty_env ty uconv in
   let univs, algs = univ_entry uconv univs in
@@ -1206,7 +1206,7 @@ and to_params uconv params =
   in
   (acc, List.rev params)
 
-and declare_ind n { params; ty; ctors; univs } i =
+and declare_ind { name = n; params; ty; ctors; univs } i =
   let mind, algs, ind_name, cnames, univs, squashy =
     match get_predeclared_ind_some n i with
     | Some (Eq, _, (ind_name, mind)) ->
@@ -1479,7 +1479,7 @@ and declare_ind n { params; ty; ctors; univs } i =
   inst
 
 (** Generate and add the squashy info *)
-let squashify n { params; ty; ctors; univs } =
+let squashify { name = n; params; ty; ctors; univs } =
   let uconvP =
     (* NB: if univs = [] this is just instantiation 0 *)
     start_uconv univs ((1 lsl List.length univs) - 1)
@@ -1558,16 +1558,14 @@ let squashify n { params; ty; ctors; univs } =
       (* TODO translate to use non recursively uniform params (fix extraction)*)
       { maybe_prop = true; always_prop; lean_squashes }
 
-let squashify n ind =
-  let s = squashify n ind in
-  squash_info := N.Map.add n s !squash_info
-
-let quot_name = N.append N.anon "quot"
+let squashify ind =
+  let s = squashify ind in
+  squash_info := N.Map.add ind.name s !squash_info
 
 (* pairs of (name * number of univs) *)
 let quots = [ ("", 1); ("mk", 1); ("lift", 2); ("ind", 1) ]
 
-let declare_quot () =
+let declare_quot quot_name =
   let () =
     List.iter
       (fun (n, nunivs) ->
@@ -1590,8 +1588,8 @@ let declare_quot () =
   in
   Feedback.msg_info Pp.(str "quot registered")
 
-let declare_quot () =
-  if Rocqlib.has_ref "lean.quot" then declare_quot () else raise MissingQuot
+let declare_quot quot_name =
+  if Rocqlib.has_ref "lean.quot" then declare_quot quot_name else raise MissingQuot
 
 let { Goptions.get = just_parse } =
   Goptions.declare_bool_option_and_ref
@@ -1623,25 +1621,28 @@ let declare_instances act univs =
   in
   if not (lazy_instances ()) then loop 0
 
-let declare_def name def =
-  declare_instances (fun i -> ignore (declare_def name def i)) def.univs
+let declare_def def =
+  declare_instances (fun i -> ignore (declare_def def i)) def.univs
 
-let declare_ax name ax =
-  declare_instances (fun i -> ignore (declare_ax name ax i)) ax.univs
+let declare_ax ax =
+  declare_instances (fun i -> ignore (declare_ax ax i)) ax.univs
 
-let declare_ind name ind =
-  let () = squashify name ind in
-  declare_instances (fun i -> ignore (declare_ind name ind i)) ind.univs
+let declare_ind ind =
+  let () = squashify ind in
+  declare_instances (fun i -> ignore (declare_ind ind i)) ind.univs
 
-let add_entry n entry =
+let entry_name = function
+| Quot name | Def { name } | Ax { name } | Ind { name } -> name
+
+let add_entry entry =
   let () =
     match entry with
-    | Quot -> declare_quot ()
-    | Def def -> declare_def n def
-    | Ax ax -> declare_ax n ax
-    | Ind ind -> declare_ind n ind
+    | Quot quot_name -> declare_quot quot_name
+    | Def def -> declare_def def
+    | Ax ax -> declare_ax ax
+    | Ind ind -> declare_ind ind
   in
-  entries := N.Map.add n entry !entries
+  entries := N.Map.add (entry_name entry) entry !entries
 
 let rec is_arity = function
   | Sort _ -> true
@@ -1666,14 +1667,14 @@ let finish state =
         | Ax { univs } | Def { univs } | Ind { univs } ->
           let l = List.length univs in
           (max m l, cnt + (1 lsl l))
-        | Quot -> (max m 1, cnt + 2))
+        | Quot _ -> (max m 1, cnt + 2))
       !entries (0, 0)
   in
   let nonarities =
     N.Map.fold
       (fun _ entry cnt ->
         match entry with
-        | Ax _ | Def _ | Quot -> cnt
+        | Ax _ | Def _ | Quot _ -> cnt
         | Ind ind -> if is_arity ind.ty then cnt else cnt + 1)
       !entries 0
   in
@@ -1690,7 +1691,7 @@ let finish state =
       fnl () ++ fnl () ++ str "Done!" ++ fnl () ++ str "- "
       ++ int (N.Map.cardinal !entries)
       ++ str " entries (" ++ int cnt ++ str " possible instances)"
-      ++ (if N.Map.exists (fun _ x -> Quot == x) !entries then
+      ++ (if N.Map.exists (fun _ -> function Quot _ -> true | _ -> false) !entries then
             str " (including quot)."
           else str ".")
       ++ fnl () ++
@@ -1777,15 +1778,20 @@ let rec do_input state ~from ~until ch =
       | true, _ | false, None ->
         incr lcnt;
         do_input state ~from ~until ch
-      | false, Some (n, entry) ->
+      | false, Some (Nota _) ->
+        (* notations not yet implemented *)
+        incr lcnt;
+        do_input state ~from ~until ch
+      | false, Some (Entry entry) ->
         (* freeze is actually pretty costly, so make sure we don't run it for non sideffect lines. *)
         let st = freeze () in
-        (match add_entry n entry with
+        (match add_entry entry with
         | () ->
           incr lcnt;
           do_input state ~from ~until ch
         | exception e ->
           let e = Exninfo.capture e in
+          let n = entry_name entry in
           let epp =
             Pp.(
               str "Error at line " ++ int !lcnt ++ str " (for " ++ N.pp n
