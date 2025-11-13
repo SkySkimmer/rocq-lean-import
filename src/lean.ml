@@ -12,6 +12,7 @@ open Names
 open Univ
 open UVars
 module RelDecl = Context.Rel.Declaration
+open LeanExpr
 
 let __ () = assert false
 let invalid = Constr.(mkApp (mkSet, [| mkSet |]))
@@ -227,99 +228,7 @@ let with_unsafe_univs f () =
     Global.set_typing_flags flags;
     Exninfo.iraise e
 
-module RRange : sig
-  type +'a t
-  (** Like Range.t, but instead of cons we append *)
-
-  val empty : 'a t
-  val length : 'a t -> int
-  val append : 'a t -> 'a -> 'a t
-  val get : 'a t -> int -> 'a
-  val singleton : 'a -> 'a t
-end = struct
-  type 'a t = { data : 'a Range.t; len : int }
-
-  let empty = { data = Range.empty; len = 0 }
-  let length x = x.len
-  let append { data; len } x = { data = Range.cons x data; len = len + 1 }
-
-  let get { data; len } i =
-    if i >= len then raise Not_found else Range.get data (len - i - 1)
-
-  let singleton x = { data = Range.cons x Range.empty; len = 1 }
-end
-
-module LeanName : sig
-  type t = private string list
-
-  val anon : t
-  val of_list : string list -> t [@@warning "-32"]
-  val append : t -> string -> t
-  val append_list : t -> string list -> t
-  val equal : t -> t -> bool
-
-  val raw_append : t -> string -> t
-  (** for private names *)
-
-  val to_coq_string : t -> string
-  val to_lean_string : t -> string
-  val to_id : t -> Id.t
-  val to_name : t -> Name.t
-  val pp : t -> Pp.t
-
-  module Set : CSet.S with type elt = t
-  module Map : CMap.ExtS with type key = t and module Set := Set
-end = struct
-  type t = string list
-  (** "foo.bar.baz" is [baz;bar;foo] (like with dirpaths) *)
-
-  let anon : t = []
-  let of_list x = x
-
-  let toclean =
-    [
-      ('@', "__at__");
-      ('?', "__q");
-      ('!', "__B");
-      ('\\', "__bs");
-      ('/', "__fs");
-      ('^', "__v");
-      ('(', "__o");
-      (')', "__c");
-      (':', "__co");
-      ('=', "__eq");
-    ]
-
-  let clean_string s =
-    List.fold_left
-      (fun s (c, replace) -> String.concat replace (String.split_on_char c s))
-      (Unicode.ascii_of_ident s) toclean
-
-  let append a b = clean_string b :: a
-  let append_list a bs = List.append (List.rev_map clean_string bs) a
-  let raw_append a b = match a with [] -> [ b ] | hd :: tl -> (hd ^ b) :: tl
-  let to_id (x : t) = Id.of_string (String.concat "_" (List.rev x))
-  let to_name x = if x = [] then Anonymous else Name (to_id x)
-  let to_coq_string x = String.concat "_" (List.rev x)
-  let to_lean_string x = String.concat "." (List.rev x)
-  let pp x = Pp.(prlist_with_sep (fun () -> str ".") str) (List.rev x)
-  let equal = CList.equal String.equal
-
-  module Self = struct
-    type nonrec t = t
-
-    let compare = CList.compare String.compare
-  end
-
-  module Set = Set.Make (Self)
-  module Map = CMap.Make (Self)
-end
-
 module N = LeanName
-
-module U = struct
-  type t = Prop | Succ of t | Max of t * t | IMax of t * t | UNamed of N.t
-end
 
 let sort_of_level = function
   | LSProp -> Sorts.sprop
@@ -502,67 +411,32 @@ let to_univ_level u uconv =
         in
         (uconv, l)))
 
-type binder_kind =
-  | NotImplicit
-  | Maximal
-  | NonMaximal
-  | Typeclass  (** WRT Coq, Typeclass is like Maximal. *)
-
-type expr =
-  | Bound of int
-  | Sort of U.t
-  | Const of N.t * U.t list
-  | App of expr * expr
-  | Let of { name : N.t; ty : expr; v : expr; rest : expr }
-      (** Let: undocumented in export_format.md *)
-  | Lam of binder_kind * N.t * expr * expr
-  | Pi of binder_kind * N.t * expr * expr
-  | Proj of N.t * int * expr  (** Proj: name of ind, field, term *)
-  | Nat of Z.t
-  | String of string
-
-type def = { ty : expr; body : expr; univs : N.t list; height : int }
-type ax = { ty : expr; univs : N.t list }
-
-type ind = {
-  params : (binder_kind * N.t * expr) list;
-  ty : expr;
-  ctors : (N.t * expr) list;
-  univs : N.t list;
-}
-
-type entry = Def of def | Ax of ax | Ind of ind | Quot
-
 (** Definitional height, used for unfolding heuristics.
 
     The definitional height is the longest sequence of constant unfoldings until
     we get a term without definitions (recursors don't count). *)
-let height entries =
-  let rec h = function
-    | Const (c, _) ->
-      (match N.Map.find c entries with
-      | exception Not_found ->
-        0 (* maybe a constructor or recursor, or just skipped *)
-      | Def { height } -> height + 1
-      | Quot | Ax _ | Ind _ -> 0)
-    | Bound _ | Sort _ -> 0
-    | Lam (_, _, a, b) | Pi (_, _, a, b) | App (a, b) -> max (h a) (h b)
-    | Let { name = _; ty; v; rest } -> max (h ty) (max (h v) (h rest))
-    | Proj (_, _, c) -> h c
-    | Nat _ | String _ -> 0
-  in
-  h
 
-type notation_kind = Prefix | Infix | Postfix
+let height_cache = Summary.ref ~name:"lean-heights" N.Map.empty
 
-type notation = {
-  kind : notation_kind;
-  head : N.t;
-  level : int;
-  token : string;
-}
-[@@warning "-69"]
-(* not yet used *)
+let rec height = function
+  | Const (c, _) ->
+    (try N.Map.find c !height_cache + 1
+     with Not_found ->
+       (* non constant, recursor, or just skipped *)
+       0)
+  | Bound _ | Sort _ -> 0
+  | Lam (_, _, a, b) | Pi (_, _, a, b) | App (a, b) -> max (height a) (height b)
+  | Let { name = _; ty; v; rest } -> max (height ty) (max (height v) (height rest))
+  | Proj (_, _, c) -> height c
+  | Nat _ | String _ -> 0
+
+let height n body =
+  match N.Map.find_opt n !height_cache with
+  | Some h -> h
+  | None ->
+    let h = height body in
+    height_cache := N.Map.add n h !height_cache;
+    h
 
 type instantiation = {
   ref : GlobRef.t;
@@ -791,7 +665,7 @@ let name_for_core n i =
    should be rare *)
 let name_for n i =
   let base = name_for_core n i in
-  if not (Global.exists_objlabel (Label.of_id base)) then base
+  if not (Global.exists_objlabel base) then base
   else
     (* prevent resetting the number *)
     let base = if i = 0 then base else Id.of_string (Id.to_string base ^ "_") in
@@ -1260,13 +1134,13 @@ and ensure_exists n i =
     (* if i = 0 then CErrors.user_err Pp.(N.pp n ++ str " was not instantiated!"); *)
     (* assert (not (upfront_instances ())); *)
     (match N.Map.find n !entries with
-    | Def def -> declare_def n def i
-    | Ax ax -> declare_ax n ax i
-    | Ind ind -> declare_ind n ind i
-    | Quot -> CErrors.user_err Pp.(str "quot must be predeclared")
+    | Def def -> declare_def def i
+    | Ax ax -> declare_ax ax i
+    | Ind ind -> declare_ind ind i
+    | Quot _ -> CErrors.user_err Pp.(str "quot must be predeclared")
     | exception Not_found -> CErrors.user_err Pp.(str "missing " ++ N.pp n))
 
-and declare_def n { ty; body; univs; height } i =
+and declare_def { name = n; ty; body; univs; } i =
   let ref, algs =
     match get_predeclared_def_some n i with
     | Some ((UInt32_size | Nat_isValidChar), _, (def_name, c)) ->
@@ -1299,13 +1173,14 @@ and declare_def n { ty; body; univs; height } i =
   in
   let () =
     let c = match ref with ConstRef c -> c | _ -> assert false in
+    let height = height n body in
     Global.set_strategy (Conv_oracle.EvalConstRef c) (Level (-height))
   in
   let inst = { ref; algs } in
   let () = add_declared n i inst in
   inst
 
-and declare_ax n { ty; univs } i =
+and declare_ax { name = n; ty; univs } i =
   let uconv = start_uconv univs i in
   let uconv, ty = to_constr empty_env ty uconv in
   let univs, algs = univ_entry uconv univs in
@@ -1331,7 +1206,7 @@ and to_params uconv params =
   in
   (acc, List.rev params)
 
-and declare_ind n { params; ty; ctors; univs } i =
+and declare_ind { name = n; params; ty; ctors; univs } i =
   let mind, algs, ind_name, cnames, univs, squashy =
     match get_predeclared_ind_some n i with
     | Some (Eq, _, (ind_name, mind)) ->
@@ -1604,7 +1479,7 @@ and declare_ind n { params; ty; ctors; univs } i =
   inst
 
 (** Generate and add the squashy info *)
-let squashify n { params; ty; ctors; univs } =
+let squashify { name = n; params; ty; ctors; univs } =
   let uconvP =
     (* NB: if univs = [] this is just instantiation 0 *)
     start_uconv univs ((1 lsl List.length univs) - 1)
@@ -1683,16 +1558,14 @@ let squashify n { params; ty; ctors; univs } =
       (* TODO translate to use non recursively uniform params (fix extraction)*)
       { maybe_prop = true; always_prop; lean_squashes }
 
-let squashify n ind =
-  let s = squashify n ind in
-  squash_info := N.Map.add n s !squash_info
-
-let quot_name = N.append N.anon "quot"
+let squashify ind =
+  let s = squashify ind in
+  squash_info := N.Map.add ind.name s !squash_info
 
 (* pairs of (name * number of univs) *)
 let quots = [ ("", 1); ("mk", 1); ("lift", 2); ("ind", 1) ]
 
-let declare_quot () =
+let declare_quot quot_name =
   let () =
     List.iter
       (fun (n, nunivs) ->
@@ -1715,94 +1588,8 @@ let declare_quot () =
   in
   Feedback.msg_info Pp.(str "quot registered")
 
-let declare_quot () =
-  if Rocqlib.has_ref "lean.quot" then declare_quot () else raise MissingQuot
-
-let do_bk = function
-  | "#BD" -> NotImplicit
-  | "#BI" -> Maximal
-  | "#BS" -> NonMaximal
-  | "#BC" -> Typeclass
-  | bk ->
-    CErrors.user_err
-      Pp.(str "unknown binder kind " ++ str bk ++ str "." ++ fnl ())
-
-let do_notation_kind = function
-  | "#PREFIX" -> Prefix
-  | "#INFIX" -> Infix
-  | "#POSTFIX" -> Postfix
-  | k -> assert false
-
-type parsing_state = {
-  names : N.t RRange.t;
-  exprs : expr RRange.t;
-  univs : U.t RRange.t;
-  skips : int;
-  notations : notation list;
-}
-
-let empty_state =
-  {
-    names = RRange.singleton N.anon;
-    exprs = RRange.empty;
-    univs = RRange.singleton U.Prop;
-    skips = 0;
-    notations = [];
-  }
-
-let get_name state n =
-  let n = int_of_string n in
-  RRange.get state.names n
-
-let get_expr state e =
-  let e = int_of_string e in
-  RRange.get state.exprs e
-
-let rec do_ctors state nctors acc l =
-  if nctors = 0 then (List.rev acc, l)
-  else
-    match l with
-    | name :: ty :: rest ->
-      let name = get_name state name
-      and ty = get_expr state ty in
-      do_ctors state (nctors - 1) ((name, ty) :: acc) rest
-    | _ -> CErrors.user_err Pp.(str "Not enough constructors")
-
-(** Replace [n] (meant to be an the inductive type appearing in the constructor
-    type) by (Bound k). *)
-let rec replace_ind ind k = function
-  | Const (n', _) when N.equal ind n' -> Bound k
-  | (Const _ | Bound _ | Sort _) as e -> e
-  | App (a, b) -> App (replace_ind ind k a, replace_ind ind k b)
-  | Let { name; ty; v; rest } ->
-    Let
-      {
-        name;
-        ty = replace_ind ind k ty;
-        v = replace_ind ind k v;
-        rest = replace_ind ind (k + 1) rest;
-      }
-  | Lam (bk, name, a, b) ->
-    Lam (bk, name, replace_ind ind k a, replace_ind ind (k + 1) b)
-  | Pi (bk, name, a, b) ->
-    Pi (bk, name, replace_ind ind k a, replace_ind ind (k + 1) b)
-  | Proj (n, field, c) -> Proj (n, field, replace_ind ind k c)
-  | (Nat _ | String _) as x -> x
-
-let rec pop_params npar ty =
-  if npar = 0 then ([], ty)
-  else
-    match ty with
-    | Pi (bk, name, a, b) ->
-      let pars, ty = pop_params (npar - 1) b in
-      ((bk, name, a) :: pars, ty)
-    | _ -> assert false
-
-let fix_ctor ind nparams ty =
-  let _, ty = pop_params nparams ty in
-  replace_ind ind nparams ty
-
-let as_univ state s = RRange.get state.univs (int_of_string s)
+let declare_quot quot_name =
+  if Rocqlib.has_ref "lean.quot" then declare_quot quot_name else raise MissingQuot
 
 let { Goptions.get = just_parse } =
   Goptions.declare_bool_option_and_ref
@@ -1834,191 +1621,28 @@ let declare_instances act univs =
   in
   if not (lazy_instances ()) then loop 0
 
-let declare_def name def =
-  declare_instances (fun i -> ignore (declare_def name def i)) def.univs
+let declare_def def =
+  declare_instances (fun i -> ignore (declare_def def i)) def.univs
 
-let declare_ax name ax =
-  declare_instances (fun i -> ignore (declare_ax name ax i)) ax.univs
+let declare_ax ax =
+  declare_instances (fun i -> ignore (declare_ax ax i)) ax.univs
 
-let declare_ind name ind =
-  let () = squashify name ind in
-  declare_instances (fun i -> ignore (declare_ind name ind i)) ind.univs
+let declare_ind ind =
+  let () = squashify ind in
+  declare_instances (fun i -> ignore (declare_ind ind i)) ind.univs
 
-let add_entry n entry =
+let entry_name = function
+| Quot name | Def { name } | Ax { name } | Ind { name } -> name
+
+let add_entry entry =
   let () =
     match entry with
-    | Quot -> declare_quot ()
-    | Def def -> declare_def n def
-    | Ax ax -> declare_ax n ax
-    | Ind ind -> declare_ind n ind
+    | Quot quot_name -> declare_quot quot_name
+    | Def def -> declare_def def
+    | Ax ax -> declare_ax ax
+    | Ind ind -> declare_ind ind
   in
-  entries := N.Map.add n entry !entries
-
-let parse_hexa c =
-  if 'A' <= c && c <= 'F' then int_of_char c - int_of_char 'A'
-  else begin
-    assert ('0' <= c && c <= '9');
-    int_of_char c - int_of_char '0'
-  end
-
-let parse_char s =
-  assert (String.length s = 2);
-  Char.chr ((parse_hexa s.[0] * 16) + parse_hexa s.[1])
-
-let do_line state l =
-  (* Lean printing strangeness: sometimes we get double spaces (typically with INFIX) *)
-  match
-    List.filter (fun s -> s <> "") (String.split_on_char ' ' (String.trim l))
-  with
-  | [] -> (state, None) (* empty line *)
-  | "#DEF" :: name :: ty :: body :: univs ->
-    let name = get_name state name in
-    line_msg name;
-    let ty = get_expr state ty
-    and body = get_expr state body
-    and univs = List.map (get_name state) univs in
-    let height = height !entries body in
-    let def = { ty; body; univs; height } in
-    (state, Some (name, Def def))
-  | "#AX" :: name :: ty :: univs ->
-    let name = get_name state name in
-    line_msg name;
-    let ty = get_expr state ty
-    and univs = List.map (get_name state) univs in
-    let ax = { ty; univs } in
-    (state, Some (name, Ax ax))
-  | "#IND" :: nparams :: name :: ty :: nctors :: rest ->
-    let name = get_name state name in
-    line_msg name;
-    let nparams = int_of_string nparams
-    and ty = get_expr state ty
-    and nctors = int_of_string nctors in
-    let params, ty = pop_params nparams ty in
-    let ctors, univs = do_ctors state nctors [] rest in
-    let ctors =
-      List.map (fun (nctor, ty) -> (nctor, fix_ctor name nparams ty)) ctors
-    in
-    let univs = List.map (get_name state) univs in
-    let ind = { params; ty; ctors; univs } in
-    (state, Some (name, Ind ind))
-  | [ "#QUOT" ] ->
-    line_msg quot_name;
-    (state, Some (quot_name, Quot))
-  | (("#PREFIX" | "#INFIX" | "#POSTFIX") as kind) :: rest ->
-    (match rest with
-    | [ n; level; token ] ->
-      let kind = do_notation_kind kind
-      and n = get_name state n
-      and level = int_of_string level in
-      ( {
-          state with
-          notations = { kind; head = n; level; token } :: state.notations;
-        },
-        None )
-    | _ ->
-      CErrors.user_err
-        Pp.(
-          str "bad notation: " ++ prlist_with_sep (fun () -> str "; ") str rest))
-  | next :: rest ->
-    let next =
-      try int_of_string next
-      with Failure _ ->
-        CErrors.user_err Pp.(str "Unknown start of line " ++ str next)
-    in
-    let state =
-      match rest with
-      | [ "#NS"; base; cons ] ->
-        assert (next = RRange.length state.names);
-        let base = get_name state base in
-        let cons = N.append base cons in
-        { state with names = RRange.append state.names cons }
-      | [ "#NI"; base; cons ] ->
-        assert (next = RRange.length state.names);
-        (* NI: private name. cons is an int, base is expected to be _private :: stuff
-           (true in lean stdlib, dunno elsewhere) *)
-        let base = get_name state base in
-        let n = N.raw_append base cons in
-        { state with names = RRange.append state.names n }
-      | [ "#US"; base ] ->
-        assert (next = RRange.length state.univs);
-        let base = as_univ state base in
-        { state with univs = RRange.append state.univs (Succ base) }
-      | [ "#UM"; a; b ] ->
-        assert (next = RRange.length state.univs);
-        let a = as_univ state a
-        and b = as_univ state b in
-        { state with univs = RRange.append state.univs (Max (a, b)) }
-      | [ "#UIM"; a; b ] ->
-        assert (next = RRange.length state.univs);
-        let a = as_univ state a
-        and b = as_univ state b in
-        { state with univs = RRange.append state.univs (IMax (a, b)) }
-      | [ "#UP"; n ] ->
-        assert (next = RRange.length state.univs);
-        let n = get_name state n in
-        { state with univs = RRange.append state.univs (UNamed n) }
-      | [ "#EV"; n ] ->
-        assert (next = RRange.length state.exprs);
-        let n = int_of_string n in
-        { state with exprs = RRange.append state.exprs (Bound n) }
-      | [ "#ES"; u ] ->
-        assert (next = RRange.length state.exprs);
-        let u = as_univ state u in
-        { state with exprs = RRange.append state.exprs (Sort u) }
-      | "#EC" :: n :: univs ->
-        let n = get_name state n in
-        assert (next = RRange.length state.exprs);
-        let univs = List.map (as_univ state) univs in
-        { state with exprs = RRange.append state.exprs (Const (n, univs)) }
-      | [ "#EA"; a; b ] ->
-        assert (next = RRange.length state.exprs);
-        let a = get_expr state a
-        and b = get_expr state b in
-        { state with exprs = RRange.append state.exprs (App (a, b)) }
-      | [ "#EZ"; n; ty; v; rest ] ->
-        assert (next = RRange.length state.exprs);
-        let n = get_name state n
-        and ty = get_expr state ty
-        and v = get_expr state v
-        and rest = get_expr state rest in
-        {
-          state with
-          exprs = RRange.append state.exprs (Let { name = n; ty; v; rest });
-        }
-      | [ "#EL"; bk; n; ty; body ] ->
-        assert (next = RRange.length state.exprs);
-        let bk = do_bk bk
-        and n = get_name state n
-        and ty = get_expr state ty
-        and body = get_expr state body in
-        { state with exprs = RRange.append state.exprs (Lam (bk, n, ty, body)) }
-      | [ "#EP"; bk; n; ty; body ] ->
-        assert (next = RRange.length state.exprs);
-        let bk = do_bk bk
-        and n = get_name state n
-        and ty = get_expr state ty
-        and body = get_expr state body in
-        { state with exprs = RRange.append state.exprs (Pi (bk, n, ty, body)) }
-      | [ "#EJ"; ind; field; term ] ->
-        let ind = get_name state ind
-        and field = int_of_string field
-        and term = get_expr state term in
-        {
-          state with
-          exprs = RRange.append state.exprs (Proj (ind, field, term));
-        }
-      | [ "#ELN"; n ] ->
-        let n = Z.of_string n in
-        { state with exprs = RRange.append state.exprs (Nat n) }
-      | "#ELS" :: bytes ->
-        let s = Seq.map parse_char (List.to_seq bytes) in
-        let s = String.of_seq s in
-        { state with exprs = RRange.append state.exprs (String s) }
-      | _ ->
-        CErrors.user_err
-          Pp.(str "cannot understand " ++ str l ++ str "." ++ fnl ())
-    in
-    (state, None)
+  entries := N.Map.add (entry_name entry) entry !entries
 
 let rec is_arity = function
   | Sort _ -> true
@@ -2030,6 +1654,11 @@ let { Goptions.get = print_squashes } =
     ~key:[ "Lean"; "Print"; "Squash"; "Info" ]
     ~value:false ()
 
+type input_state = {
+  pstate : LeanParse.parsing_state;
+  skips : int;
+}
+
 let finish state =
   let max_univs, cnt =
     N.Map.fold
@@ -2038,14 +1667,14 @@ let finish state =
         | Ax { univs } | Def { univs } | Ind { univs } ->
           let l = List.length univs in
           (max m l, cnt + (1 lsl l))
-        | Quot -> (max m 1, cnt + 2))
+        | Quot _ -> (max m 1, cnt + 2))
       !entries (0, 0)
   in
   let nonarities =
     N.Map.fold
       (fun _ entry cnt ->
         match entry with
-        | Ax _ | Def _ | Quot -> cnt
+        | Ax _ | Def _ | Quot _ -> cnt
         | Ind ind -> if is_arity ind.ty then cnt else cnt + 1)
       !entries 0
   in
@@ -2062,19 +1691,13 @@ let finish state =
       fnl () ++ fnl () ++ str "Done!" ++ fnl () ++ str "- "
       ++ int (N.Map.cardinal !entries)
       ++ str " entries (" ++ int cnt ++ str " possible instances)"
-      ++ (if N.Map.exists (fun _ x -> Quot == x) !entries then
+      ++ (if N.Map.exists (fun _ -> function Quot _ -> true | _ -> false) !entries then
             str " (including quot)."
           else str ".")
-      ++ fnl () ++ str "- "
-      ++ int (RRange.length state.univs)
-      ++ str " universe expressions"
-      ++ fnl () ++ str "- "
-      ++ int (RRange.length state.names)
-      ++ str " names" ++ fnl () ++ str "- "
-      ++ int (RRange.length state.exprs)
-      ++ str " expression nodes" ++ fnl ()
-      ++ (if state.skips > 0 then str "Skipped " ++ int state.skips ++ fnl ()
-          else mt ())
+      ++ fnl () ++
+      LeanParse.pp_state state.pstate ++
+      (if state.skips > 0 then str "Skipped " ++ int state.skips ++ fnl ()
+       else mt ())
       ++ str "Max universe instance length "
       ++ int max_univs ++ str "." ++ fnl () ++ int nonarities
       ++ str " inductives have non syntactically arity types."
@@ -2103,10 +1726,11 @@ let () =
 exception TimedOut
 
 let do_line state l =
+  let do_line () = LeanParse.do_line state ~lcnt:!lcnt l in
   match !timeout with
-  | None -> do_line state l
+  | None -> do_line ()
   | Some t ->
-    (match Control.timeout (float_of_int t) (fun () -> do_line state l) () with
+    (match Control.timeout (float_of_int t) do_line () with
     | Ok v -> v
     | Error info -> Exninfo.iraise (TimedOut, info))
 
@@ -2148,20 +1772,26 @@ let rec do_input state ~from ~until ch =
       incr lcnt;
       do_input state ~from ~until ch
     | l ->
-      let state, oentry = do_line state l in
+      let pstate, oentry = do_line state.pstate l in
+      let state = { state with pstate } in
       (match (just_parse (), oentry) with
       | true, _ | false, None ->
         incr lcnt;
         do_input state ~from ~until ch
-      | false, Some (n, entry) ->
+      | false, Some (Nota _) ->
+        (* notations not yet implemented *)
+        incr lcnt;
+        do_input state ~from ~until ch
+      | false, Some (Entry entry) ->
         (* freeze is actually pretty costly, so make sure we don't run it for non sideffect lines. *)
         let st = freeze () in
-        (match add_entry n entry with
+        (match add_entry entry with
         | () ->
           incr lcnt;
           do_input state ~from ~until ch
         | exception e ->
           let e = Exninfo.capture e in
+          let n = entry_name entry in
           let epp =
             Pp.(
               str "Error at line " ++ int !lcnt ++ str " (for " ++ N.pp n
@@ -2187,15 +1817,16 @@ let rec do_input state ~from ~until ch =
             finish state;
             CErrors.user_err epp)))
 
-let pstate = Summary.ref ~name:"lean-parse-state" empty_state
+let pstate = Summary.ref ~name:"lean-parse-state" LeanParse.empty_state
 
 let lean_obj =
-  let cache (pstatev, setsv, declaredv, entriesv, squash_infov) =
+  let cache (pstatev, setsv, declaredv, entriesv, squash_infov, heightv) =
     pstate := pstatev;
     sets := setsv;
     declared := declaredv;
     entries := entriesv;
     squash_info := squash_infov;
+    height_cache := heightv;
     ()
   in
   let open Libobject in
@@ -2210,7 +1841,8 @@ let lean_obj =
 let import ~from ~until f =
   lcnt := 1;
   (* silence the definition messages from Coq *)
-  let pstatev =
-    Flags.silently (fun () -> do_input !pstate ~from ~until (open_in f)) ()
+  let { pstate = pstatev } =
+    Flags.silently (fun () ->
+        do_input { pstate = !pstate; skips = 0 } ~from ~until (open_in f)) ()
   in
-  Lib.add_leaf (lean_obj (pstatev, !sets, !declared, !entries, !squash_info))
+  Lib.add_leaf (lean_obj (pstatev, !sets, !declared, !entries, !squash_info, !height_cache))
