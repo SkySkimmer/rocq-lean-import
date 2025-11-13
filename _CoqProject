@@ -9,4 +9,6 @@ src/lean.mli
 src/leanExpr.mli
 src/leanName.ml
 src/leanName.mli
+src/leanParse.ml
+src/leanParse.mli
 src/lean_import.mlpack
