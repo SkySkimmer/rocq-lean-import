@@ -6,4 +6,7 @@ src/Lean.v
 src/g_lean.mlg
 src/lean.ml
 src/lean.mli
+src/leanExpr.mli
+src/leanName.ml
+src/leanName.mli
 src/lean_import.mlpack

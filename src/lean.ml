@@ -12,6 +12,7 @@ open Names
 open Univ
 open UVars
 module RelDecl = Context.Rel.Declaration
+open LeanExpr
 
 let __ () = assert false
 let invalid = Constr.(mkApp (mkSet, [| mkSet |]))
@@ -249,77 +250,7 @@ end = struct
   let singleton x = { data = Range.cons x Range.empty; len = 1 }
 end
 
-module LeanName : sig
-  type t = private string list
-
-  val anon : t
-  val of_list : string list -> t [@@warning "-32"]
-  val append : t -> string -> t
-  val append_list : t -> string list -> t
-  val equal : t -> t -> bool
-
-  val raw_append : t -> string -> t
-  (** for private names *)
-
-  val to_coq_string : t -> string
-  val to_lean_string : t -> string
-  val to_id : t -> Id.t
-  val to_name : t -> Name.t
-  val pp : t -> Pp.t
-
-  module Set : CSet.S with type elt = t
-  module Map : CMap.ExtS with type key = t and module Set := Set
-end = struct
-  type t = string list
-  (** "foo.bar.baz" is [baz;bar;foo] (like with dirpaths) *)
-
-  let anon : t = []
-  let of_list x = x
-
-  let toclean =
-    [
-      ('@', "__at__");
-      ('?', "__q");
-      ('!', "__B");
-      ('\\', "__bs");
-      ('/', "__fs");
-      ('^', "__v");
-      ('(', "__o");
-      (')', "__c");
-      (':', "__co");
-      ('=', "__eq");
-    ]
-
-  let clean_string s =
-    List.fold_left
-      (fun s (c, replace) -> String.concat replace (String.split_on_char c s))
-      (Unicode.ascii_of_ident s) toclean
-
-  let append a b = clean_string b :: a
-  let append_list a bs = List.append (List.rev_map clean_string bs) a
-  let raw_append a b = match a with [] -> [ b ] | hd :: tl -> (hd ^ b) :: tl
-  let to_id (x : t) = Id.of_string (String.concat "_" (List.rev x))
-  let to_name x = if x = [] then Anonymous else Name (to_id x)
-  let to_coq_string x = String.concat "_" (List.rev x)
-  let to_lean_string x = String.concat "." (List.rev x)
-  let pp x = Pp.(prlist_with_sep (fun () -> str ".") str) (List.rev x)
-  let equal = CList.equal String.equal
-
-  module Self = struct
-    type nonrec t = t
-
-    let compare = CList.compare String.compare
-  end
-
-  module Set = Set.Make (Self)
-  module Map = CMap.Make (Self)
-end
-
 module N = LeanName
-
-module U = struct
-  type t = Prop | Succ of t | Max of t * t | IMax of t * t | UNamed of N.t
-end
 
 let sort_of_level = function
   | LSProp -> Sorts.sprop
@@ -501,37 +432,6 @@ let to_univ_level u uconv =
           { uconv with levels = Universe.Map.add u l uconv.levels; graph }
         in
         (uconv, l)))
-
-type binder_kind =
-  | NotImplicit
-  | Maximal
-  | NonMaximal
-  | Typeclass  (** WRT Coq, Typeclass is like Maximal. *)
-
-type expr =
-  | Bound of int
-  | Sort of U.t
-  | Const of N.t * U.t list
-  | App of expr * expr
-  | Let of { name : N.t; ty : expr; v : expr; rest : expr }
-      (** Let: undocumented in export_format.md *)
-  | Lam of binder_kind * N.t * expr * expr
-  | Pi of binder_kind * N.t * expr * expr
-  | Proj of N.t * int * expr  (** Proj: name of ind, field, term *)
-  | Nat of Z.t
-  | String of string
-
-type def = { ty : expr; body : expr; univs : N.t list; height : int }
-type ax = { ty : expr; univs : N.t list }
-
-type ind = {
-  params : (binder_kind * N.t * expr) list;
-  ty : expr;
-  ctors : (N.t * expr) list;
-  univs : N.t list;
-}
-
-type entry = Def of def | Ax of ax | Ind of ind | Quot
 
 (** Definitional height, used for unfolding heuristics.
 
