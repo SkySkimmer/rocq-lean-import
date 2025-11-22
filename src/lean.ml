@@ -718,7 +718,7 @@ let get_predeclared_ind_any n i =
     (fun (indk, indh) ->
       get_predeclared_ind indh n i |> Option.map (fun x -> (indk, indh, x)))
     [
-      (Eq, [ "eq" ]);
+      (Eq, [ "Eq" ]);
       (Nat, [ "Nat" ]);
       (Nat_le, [ "Nat"; "le" ]);
       (Or, [ "Or" ]);
@@ -1589,7 +1589,7 @@ let declare_quot quot_name =
   Feedback.msg_info Pp.(str "quot registered")
 
 let declare_quot quot_name =
-  if Rocqlib.has_ref "lean.quot" then declare_quot quot_name else raise MissingQuot
+  if Rocqlib.has_ref "lean.Quot" then declare_quot quot_name else raise MissingQuot
 
 let { Goptions.get = just_parse } =
   Goptions.declare_bool_option_and_ref
