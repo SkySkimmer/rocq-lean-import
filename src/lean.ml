@@ -129,11 +129,11 @@ let lean_scheme env ~dep mind u s =
     let uctx = Evd.universe_context_set sigma in
     match s with
     | LSProp ->
-      assert (ContextSet.is_empty uctx);
+      assert (PConstraints.ContextSet.is_empty uctx);
       body
     | Level s ->
       assert (
-        Level.Set.cardinal (fst uctx) = 1 && Constraints.is_empty (snd uctx));
+        Level.Set.cardinal (fst uctx) = 1 && PConstraints.is_empty (snd uctx));
       let v = Level.Set.choose (fst uctx) in
       Vars.subst_univs_level_constr
         (Sorts.QVar.Map.empty, Level.Map.singleton v s)
@@ -374,8 +374,8 @@ let rec level_of_sets uconv n =
         if lean_fancy_univs () then level_of_universe_core [ (Level.set, n) ]
         else UnivGen.fresh_level ()
       in
-      Global.push_context_set
-        (Level.Set.singleton l, Constraints.singleton (p, Lt, l));
+      Global.push_context_set QGraph.Static
+        (Level.Set.singleton l, PConstraints.of_univs (UnivConstraints.singleton (p, Lt, l)));
       sets := Int.Map.add n l !sets;
       let graph = add_universe l ~lbound:p uconv.graph in
       ({ uconv with graph }, l)
@@ -637,13 +637,13 @@ let univ_entry_gen { map; levels; graph } ounivs =
   let kept = Int.Map.fold (fun _ -> Level.Set.add) !sets kept in
   let csts = UGraph.constraints_for ~kept graph in
   let csts =
-    Constraints.filter
+    UnivConstraints.filter
       (fun (a, _, b) -> Level.Set.mem a uset || Level.Set.mem b uset)
       csts
   in
   let unames = { quals = [||]; univs = Array.of_list (make_unames univs ounivs)} in
   let univs = Instance.of_array ([||], Array.of_list univs) in
-  let uctx = UContext.make unames (univs, csts) in
+  let uctx = UContext.make unames (univs, PConstraints.of_univs csts) in
   let subst = snd (make_instance_subst univs) in
   let algs = List.rev_map (subst_univs_level_universe subst) algs in
   (uctx, algs)
@@ -1223,7 +1223,7 @@ and declare_ind { name = n; params; ty; ctors; univs } i =
           UContext.make
             { quals = [||]; univs =  [| Name (Id.of_string "u") |]}
             ( Instance.of_array ([||], [| univ_of_name (N.append N.anon "u") |]),
-              Constraints.empty )
+              PConstraints.empty )
         | 1 -> UContext.empty
         | _ -> assert false
       in
@@ -1404,12 +1404,12 @@ and declare_ind { name = n; params; ty; ctors; univs } i =
         in
         Level u
     in
-    let env = Environ.push_context ~strict:true univs (Global.env ()) in
+    let env = Environ.push_context ~strict:true QGraph.Static univs (Global.env ()) in
     let env =
       match u with
       | LSProp -> env
       | Level u ->
-        Environ.push_context_set ~strict:false (ContextSet.singleton u) env
+        Environ.push_context_set ~strict:false QGraph.Static (PConstraints.ContextSet.singleton_lvl u) env
     in
     let inst, uentry =
       let inst = UContext.instance univs in
