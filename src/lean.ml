@@ -374,8 +374,8 @@ let rec level_of_sets uconv n =
         if lean_fancy_univs () then level_of_universe_core [ (Level.set, n) ]
         else UnivGen.fresh_level ()
       in
-      Global.push_context_set QGraph.Static
-        (Level.Set.singleton l, PConstraints.of_univs (UnivConstraints.singleton (p, Lt, l)));
+      Global.push_context_set
+        (Level.Set.singleton l, UnivConstraints.singleton (p, Lt, l));
       sets := Int.Map.add n l !sets;
       let graph = add_universe l ~lbound:p uconv.graph in
       ({ uconv with graph }, l)
@@ -1409,7 +1409,7 @@ and declare_ind { name = n; params; ty; ctors; univs } i =
       match u with
       | LSProp -> env
       | Level u ->
-        Environ.push_context_set ~strict:false QGraph.Static (PConstraints.ContextSet.singleton_lvl u) env
+        Environ.push_context_set ~strict:false (Univ.ContextSet.singleton u) env
     in
     let inst, uentry =
       let inst = UContext.instance univs in
