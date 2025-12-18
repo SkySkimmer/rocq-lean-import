@@ -126,15 +126,16 @@ let lean_scheme env ~dep mind u s =
         dep s'
     in
     let body = EConstr.Unsafe.to_constr body in
-    let uctx = Evd.universe_context_set sigma in
+    let uctx = Evd.sort_context_set sigma in
     match s with
     | LSProp ->
-      assert (PConstraints.ContextSet.is_empty uctx);
+      assert (UnivGen.is_empty_sort_context uctx);
       body
     | Level s ->
+      let (_, us), cst = uctx in
       assert (
-        Level.Set.cardinal (fst uctx) = 1 && PConstraints.is_empty (snd uctx));
-      let v = Level.Set.choose (fst uctx) in
+        Level.Set.cardinal us = 1 && PConstraints.is_empty cst);
+      let v = Level.Set.choose us in
       Vars.subst_univs_level_constr
         (Sorts.QVar.Map.empty, Level.Map.singleton v s)
         body
