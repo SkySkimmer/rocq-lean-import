@@ -1405,7 +1405,7 @@ and declare_ind { name = n; params; ty; ctors; univs } i =
         in
         Level u
     in
-    let env = Environ.push_context ~strict:true QGraph.Static univs (Global.env ()) in
+    let env = Environ.push_context ~strict:true univs (Global.env ()) in
     let env =
       match u with
       | LSProp -> env
