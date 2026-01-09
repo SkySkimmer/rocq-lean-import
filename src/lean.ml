@@ -1306,7 +1306,14 @@ and declare_ind { name = n; params; ty; ctors; univs } i =
                  match (fields, Sorts.is_sprop sort) with
                  | [], true -> (None, [], ctys)
                  | _ :: _, false ->
-                   (Some (Some [| default_proj_id |]), fields, [ cty' ])
+                   if
+                     List.exists
+                       (fun (na, _) ->
+                         na.Context.binder_relevance
+                         == EConstr.ERelevance.relevant)
+                       fields
+                   then (Some (Some [| default_proj_id |]), fields, [ cty' ])
+                   else (None, [], ctys)
                  | [], false -> (None, [], ctys)
                  | _ :: _, true ->
                    if
