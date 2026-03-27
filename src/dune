@@ -1,8 +1,8 @@
 (library
  (name lean_import)
- (public_name coq.lean_import)
  (synopsis "Import Lean proofs into Coq!")
- (libraries coq.vernac)
+ (libraries rocq-runtime.vernac)
+ (modules_without_implementation leanExpr)
  (flags :standard -w -40))
 
 (coq.pp (modules g_lean))
